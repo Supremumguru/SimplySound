@@ -192,6 +192,7 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
         {
             var sound = coordinator.Library.Get(id);
             if (sound is null) return Results.NotFound();
+            if (sound.IsHeading) return Results.BadRequest("Headings cannot be played.");
             if (coordinator.Audio.Playback.SoundId == id && sound.Mode == "toggle") coordinator.Stop();
             else coordinator.Play(id);
             return Results.Ok(coordinator.Audio.Playback);
@@ -221,10 +222,21 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
             catch (InvalidDataException ex) { return Results.BadRequest(ex.Message); }
             catch (Exception ex) when (ex is NotSupportedException or NAudio.MmException or System.Runtime.InteropServices.COMException) { Log.Warning(ex, "Audio upload could not be decoded"); return Results.BadRequest("Audio file could not be decoded."); }
         }).DisableAntiforgery();
+        app.MapPost("/api/sounds/heading", (HeadingRequest body) =>
+        {
+            try
+            {
+                var heading = coordinator.Library.AddHeading(body.Name);
+                Log.Information("Section heading added {Id}", heading.Id);
+                return Results.Created($"/api/sounds/{heading.Id}", View(heading, coordinator.Audio.Playback));
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(ex.Message); }
+        });
         app.MapPost("/api/sounds/{id:guid}/image", async (Guid id, HttpRequest request) =>
         {
             var sound = coordinator.Library.Get(id);
             if (sound is null) return Results.NotFound();
+            if (sound.IsHeading) return Results.BadRequest("Headings cannot have artwork.");
             if (!request.HasFormContentType) return Results.BadRequest("multipart/form-data required");
             var form = await request.ReadFormAsync();
             var file = form.Files.GetFile("file");
@@ -271,7 +283,7 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
             }
             catch (KeyNotFoundException ex) { return Results.NotFound(ex.Message); }
         });
-        app.MapPost("/api/sounds/{id:guid}/play", (Guid id) => { try { coordinator.Play(id); return Results.Ok(coordinator.Audio.Playback); } catch (KeyNotFoundException) { return Results.NotFound(); } catch (Exception ex) { return Results.Problem(ex.Message); } });
+        app.MapPost("/api/sounds/{id:guid}/play", (Guid id) => { try { var sound = coordinator.Library.Get(id); if (sound is null) return Results.NotFound(); if (sound.IsHeading) return Results.BadRequest("Headings cannot be played."); coordinator.Play(id); return Results.Ok(coordinator.Audio.Playback); } catch (KeyNotFoundException) { return Results.NotFound(); } catch (Exception ex) { return Results.Problem(ex.Message); } });
         app.MapPost("/api/sounds/{id:guid}/stop", (Guid id) => { if (coordinator.Audio.Playback.SoundId == id) coordinator.Stop(); return Results.Ok(coordinator.Audio.Playback); });
         app.MapPost("/api/stop", () => { coordinator.Stop(); return Results.Ok(coordinator.Audio.Playback); });
         app.MapPost("/api/sounds/reorder", (Guid[] ids) => { try { coordinator.Library.Reorder(ids); return Results.Ok(); } catch (ArgumentException ex) { return Results.BadRequest(ex.Message); } });
@@ -367,7 +379,7 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
     {
         var imageUrl = s.ImageFilename is null ? "/assets/logo.png" : $"/api/sounds/{s.Id}/image?v={Uri.EscapeDataString(s.ImageFilename)}";
         if (s.ImageFilename is not null && !string.IsNullOrWhiteSpace(coordinator.Settings.PairingToken)) imageUrl += "&token=" + Uri.EscapeDataString(coordinator.Settings.PairingToken);
-        return new { s.Id, s.Name, s.SourceFilename, s.SourceProvider, s.SourceUrl, s.SortOrder, s.OutputGain, s.StartSeconds, s.EndSeconds, s.SourceDurationSeconds, duration = s.PlayDuration, s.Mode, s.Hotkey, s.Icon, s.ButtonLabel, s.CreatedUtc, imageUrl, playing = p.SoundId == s.Id, progress = p.SoundId == s.Id && s.PlayDuration > 0 ? Math.Clamp((p.PositionSeconds - s.StartSeconds) / s.PlayDuration, 0, 1) : 0 };
+        return new { s.Id, kind = s.IsHeading ? "heading" : "sound", s.Name, s.SourceFilename, s.SourceProvider, s.SourceUrl, s.SortOrder, s.OutputGain, s.StartSeconds, s.EndSeconds, s.SourceDurationSeconds, duration = s.PlayDuration, s.Mode, s.Hotkey, s.Icon, s.ButtonLabel, s.CreatedUtc, imageUrl, playing = !s.IsHeading && p.SoundId == s.Id, progress = !s.IsHeading && p.SoundId == s.Id && s.PlayDuration > 0 ? Math.Clamp((p.PositionSeconds - s.StartSeconds) / s.PlayDuration, 0, 1) : 0 };
     }
     private static void ApplyPatch(Sound s, SoundPatch p) { if (p.Name is not null) s.Name = p.Name; if (p.Volume is not null) s.Volume = p.Volume.Value; if (p.OutputGain is not null) s.OutputGain = p.OutputGain.Value; if (p.StartSeconds is not null) s.StartSeconds = p.StartSeconds.Value; if (p.EndSeconds.ValueKind != JsonValueKind.Undefined) s.EndSeconds = p.EndSeconds.ValueKind == JsonValueKind.Null ? null : p.EndSeconds.GetDouble(); if (p.Mode is not null) s.Mode = p.Mode; if (p.Hotkey is not null) s.Hotkey = p.Hotkey; if (p.Icon is not null) s.Icon = p.Icon; if (p.ButtonLabel is not null) s.ButtonLabel = p.ButtonLabel; }
     private static async Task<string?> DetectImageExtension(IFormFile file)
@@ -387,6 +399,7 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
         return null;
     }
 }
+public record HeadingRequest(string Name);
 public record SoundPatch(string? Name, float? Volume, float? OutputGain, double? StartSeconds, JsonElement EndSeconds, string? Mode, string? Icon, string? ButtonLabel, string? Hotkey = null);
 public record SettingsPatch(int? ButtonDensity, float? MasterVolume, float? MicOutputGain, bool? LanAccess, string? PairingToken, long? MaxUploadBytes, bool? MonitorLocally, bool? ReconnectAudio, int? Port, bool ClearPairingToken = false, bool? TailscaleAccess = null, bool? UseVirtualMicHeadroom = null);
 public record DeviceSelection(string? Id);

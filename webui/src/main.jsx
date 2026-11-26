@@ -9,7 +9,30 @@ import './style.css';
 
 const DEFAULT_ART = '/assets/logo.png';
 const token = new URLSearchParams(location.search).get('token');
-const densityStops = (total, fitLimit = total) => [...new Set([.25, .5, .75, 1].map((ratio) => Math.min(fitLimit, Math.max(1, Math.ceil(total * ratio)))))];
+const DESKTOP_COLUMN_OPTIONS = ['auto', 6, 8, 10, 12, 14, 16];
+const TABLET_COLUMN_OPTIONS = ['auto', 3, 4, 5, 6];
+const MOBILE_COLUMN_OPTIONS = ['auto', 2, 3, 4];
+
+function getColumnOptions(viewWidth) {
+  if (viewWidth <= 520) return MOBILE_COLUMN_OPTIONS;
+  if (viewWidth <= 760) return TABLET_COLUMN_OPTIONS;
+  return DESKTOP_COLUMN_OPTIONS;
+}
+
+function parseColumnPreference(raw) {
+  if (!raw || raw === 'auto') return 'auto';
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 2 && parsed <= 20 ? parsed : 'auto';
+}
+
+function loadCollapsedHeadings() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('soundboard.collapsedHeadings') || '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((item) => typeof item === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -45,6 +68,7 @@ function Glyph({ name, size = 20 }) {
     download: <><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3"/></>,
     globe: <><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></>,
     upload: <><path d="M12 16V4m0 0L8 8m4-4 4 4M5 15v5h14v-5"/></>,
+    heading: <><path d="M4 7h16M4 12h10M4 17h16"/></>,
     external: <><path d="M14 4h6v6m0-6-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></>,
   };
   return <svg {...common}>{paths[name]}</svg>;
@@ -59,14 +83,15 @@ function App() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [arrangeMode, setArrangeMode] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
-  const [density, setDensity] = useState(() => {
-    let value = 0; try { value = Number(localStorage.getItem('soundboard.visibleCount')) || 0; } catch {}
-    return Number.isInteger(value) && value >= 0 ? value : 0;
+  const [collapsedHeadings, setCollapsedHeadings] = useState(loadCollapsedHeadings);
+  const [columnPref, setColumnPref] = useState(() => {
+    try { return parseColumnPreference(localStorage.getItem('soundboard.columns')); }
+    catch { return 'auto'; }
   });
-  const [densityOpen, setDensityOpen] = useState(false);
+  const [columnsOpen, setColumnsOpen] = useState(false);
   const [volumeOpenId, setVolumeOpenId] = useState(null);
-  const [gridLayout, setGridLayout] = useState({ columns: 2, tileHeight: 174 });
-  const [fitLimit, setFitLimit] = useState(8);
+  const [gridColumns, setGridColumns] = useState(6);
+  const [viewportWidth, setViewportWidth] = useState(() => window.visualViewport?.width || window.innerWidth || 1280);
   const [dragState, setDragState] = useState(null);
   const [editing, setEditing] = useState(null);
   const [toast, setToast] = useState('');
@@ -74,12 +99,8 @@ function App() {
   const fileRef = useRef(null);
   const dialogRef = useRef(null);
   const imageRef = useRef(null);
-  const topbarRef = useRef(null);
-  const densityRef = useRef(null);
-  const selectionBarRef = useRef(null);
   const shellRef = useRef(null);
   const gridRef = useRef(null);
-  const previousSoundCountRef = useRef(0);
   const dragRef = useRef(null);
   const volumeValuesRef = useRef(new Map());
   const volumeTimersRef = useRef(new Map());
@@ -92,6 +113,9 @@ function App() {
   const [imageFile, setImageFile] = useState(null);
   const [preview, setPreview] = useState('');
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [headingDialogOpen, setHeadingDialogOpen] = useState(false);
+  const [headingTitle, setHeadingTitle] = useState('');
+  const [headingPosition, setHeadingPosition] = useState('top');
   const [marketplaceOpen, setMarketplaceOpen] = useState(false);
   const [marketplaceQuery, setMarketplaceQuery] = useState('');
   const [marketplaceResults, setMarketplaceResults] = useState([]);
@@ -102,6 +126,7 @@ function App() {
   const [installingId, setInstallingId] = useState(null);
   const [installedIds, setInstalledIds] = useState(() => new Set());
   const [installErrors, setInstallErrors] = useState({});
+  const headingDialogRef = useRef(null);
   const marketplaceDialogRef = useRef(null);
   const addMenuRef = useRef(null);
   const previewAudioRef = useRef(null);
@@ -179,16 +204,8 @@ function App() {
     return () => { stopped = true; clearTimeout(retry); socket?.close(); };
   }, [refresh, updatePlayback]);
 
-  useEffect(() => {
-    const previousCount = previousSoundCountRef.current;
-    previousSoundCountRef.current = sounds.length;
-    if (!sounds.length) { setDensity(0); return; }
-    const options = densityStops(sounds.length, fitLimit);
-    setDensity((current) => {
-      if (!current || current === previousCount || previousCount === 0 && !options.includes(current)) return sounds.length;
-      return options.reduce((nearest, option) => Math.abs(option - current) < Math.abs(nearest - current) ? option : nearest, options[0]);
-    });
-  }, [sounds.length, fitLimit]);
+  const columnOptions = getColumnOptions(viewportWidth);
+  const activeColumnOption = columnOptions.includes(columnPref) ? columnPref : 'auto';
 
   useEffect(() => {
     if (!recordingHotkey) return;
@@ -210,56 +227,47 @@ function App() {
   useEffect(() => {
     const measure = () => {
       const shell = shellRef.current;
+      const viewWidth = window.visualViewport?.width || window.innerWidth || 1280;
+      setViewportWidth((before) => Math.abs(before - viewWidth) < 1 ? before : viewWidth);
+      const options = getColumnOptions(viewWidth);
+      const effectivePref = options.includes(columnPref) ? columnPref : 'auto';
+      if (effectivePref !== 'auto') {
+        setGridColumns((before) => before === effectivePref ? before : effectivePref);
+        return;
+      }
       if (!shell) return;
       const style = getComputedStyle(shell);
       const paddingLeft = parseFloat(style.paddingLeft) || 0;
       const paddingRight = parseFloat(style.paddingRight) || 0;
-      const paddingTop = parseFloat(style.paddingTop) || 0;
-      const paddingBottom = parseFloat(style.paddingBottom) || 0;
-      const width = shell.clientWidth - paddingLeft - paddingRight;
-      const viewWidth = window.visualViewport?.width || window.innerWidth;
-      const viewHeight = shell.clientHeight;
-      const gap = viewWidth <= 520 ? 11 : viewWidth <= 760 ? 12 : 18;
-      const minimumTileWidth = viewWidth <= 520 ? 140 : viewWidth <= 760 ? 158 : 198;
-      const columns = Math.max(1, Math.min(6, Math.floor((width + gap) / (minimumTileWidth + gap))));
-      const densityHeight = densityRef.current?.getBoundingClientRect().height ?? (densityOpen ? 76 : 0);
-      const topbarHeight = topbarRef.current?.getBoundingClientRect().height || 64;
-      const selectionHeight = selectionBarRef.current?.getBoundingClientRect().height || 0;
-      const gridPaddingTop = parseFloat(getComputedStyle(gridRef.current || shell).paddingTop) || 0;
-      const availableGridHeight = Math.max(76, viewHeight - paddingTop - paddingBottom - topbarHeight - densityHeight - selectionHeight - gridPaddingTop);
-      const tileWidth = (width - gap * (columns - 1)) / columns;
-      const minTileHeight = viewWidth <= 520 ? 82 : viewWidth <= 760 ? 96 : 120;
-      const maxRows = Math.max(1, Math.floor((availableGridHeight + gap) / (minTileHeight + gap)));
-      const maxVisible = Math.max(columns, columns * maxRows);
-      const nextFitLimit = sounds.length ? Math.min(sounds.length, maxVisible) : maxVisible;
-      setFitLimit((before) => before === nextFitLimit ? before : nextFitLimit);
-      const visibleCount = loading ? nextFitLimit : Math.max(1, Math.min(sounds.length || density || 1, density || sounds.length || 1, nextFitLimit));
-      const rows = Math.ceil(visibleCount / columns);
-      const heightForRow = Math.max(44, (viewHeight - paddingTop - paddingBottom - topbarHeight - densityHeight - selectionHeight - gridPaddingTop - gap * (rows - 1)) / rows);
-      const tileHeight = Math.min(heightForRow, tileWidth * 1.08);
-      setGridLayout((before) => before.columns === columns && Math.abs(before.tileHeight - tileHeight) < 1 ? before : { columns, tileHeight });
+      const width = Math.max(0, shell.clientWidth - paddingLeft - paddingRight);
+      const gap = viewWidth <= 520 ? 11 : viewWidth <= 760 ? 12 : 16;
+      const minimumTileWidth = viewWidth <= 520 ? 140 : viewWidth <= 760 ? 160 : 175;
+      const maxAutoColumns = viewWidth <= 520 ? 3 : viewWidth <= 760 ? 6 : 16;
+      const autoColumns = Math.max(1, Math.min(maxAutoColumns, Math.floor((width + gap) / (minimumTileWidth + gap))));
+      setGridColumns((before) => before === autoColumns ? before : autoColumns);
     };
     measure();
     window.addEventListener('resize', measure, { passive: true });
     window.visualViewport?.addEventListener('resize', measure, { passive: true });
     const observer = new ResizeObserver(measure);
     if (shellRef.current) observer.observe(shellRef.current);
-    if (topbarRef.current) observer.observe(topbarRef.current);
-    if (densityRef.current) observer.observe(densityRef.current);
-    if (selectionBarRef.current) observer.observe(selectionBarRef.current);
-    if (gridRef.current) observer.observe(gridRef.current);
     return () => { window.removeEventListener('resize', measure); window.visualViewport?.removeEventListener('resize', measure); observer.disconnect(); };
-  }, [density, densityOpen, selectionMode, selected.size, arrangeMode, sounds.length, loading]);
+  }, [columnPref]);
 
-  const densityOptions = densityStops(sounds.length || fitLimit, fitLimit);
-
-  useEffect(() => { if (density > 0) try { localStorage.setItem('soundboard.visibleCount', String(density)); } catch {} }, [density]);
+  useEffect(() => { try { localStorage.setItem('soundboard.columns', String(columnPref)); } catch {} }, [columnPref]);
+  useEffect(() => { try { localStorage.setItem('soundboard.collapsedHeadings', JSON.stringify([...collapsedHeadings])); } catch {} }, [collapsedHeadings]);
 
   useEffect(() => {
     if (!toast) return undefined;
     const timer = setTimeout(() => setToast(''), 3600);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    const node = headingDialogRef.current;
+    if (headingDialogOpen && node && !node.open) node.showModal();
+    if (!headingDialogOpen && node?.open) node.close();
+  }, [headingDialogOpen]);
 
   useEffect(() => {
     const node = dialogRef.current;
@@ -274,16 +282,28 @@ function App() {
     return () => URL.revokeObjectURL(url);
   }, [imageFile]);
 
+  function toggleHeadingCollapsed(id) {
+    setCollapsedHeadings((before) => {
+      const next = new Set(before);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleItemSelection(id) {
+    setSelected((before) => {
+      const next = new Set(before);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
   async function play(sound) {
     if (selectionMode) {
-      setSelected((before) => {
-        const next = new Set(before);
-        next.has(sound.id) ? next.delete(sound.id) : next.add(sound.id);
-        return next;
-      });
+      toggleItemSelection(sound.id);
       return;
     }
-    if (arrangeMode) return;
+    if (arrangeMode || sound.kind === 'heading') return;
     await flushVolumeSave(sound.id).catch(() => {});
     const previous = playbackRef.current;
     const shouldToggleOff = previous.soundId === sound.id && sound.mode === 'toggle';
@@ -388,6 +408,29 @@ function App() {
     finally { setInstallingId(null); }
   }
 
+  async function createHeading(event) {
+    event.preventDefault();
+    const name = headingTitle.trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      const existingIds = soundsRef.current.map((item) => item.id);
+      const created = await api('/api/sounds/heading', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+      });
+      if (headingPosition === 'top' && created?.id && existingIds.length > 0) {
+        await api('/api/sounds/reorder', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify([created.id, ...existingIds]),
+        });
+      }
+      await refresh();
+      setHeadingTitle('');
+      setHeadingDialogOpen(false);
+      setToast(`Heading “${name}” added`);
+    } catch (error) { setToast(error.message); }
+    finally { setSaving(false); }
+  }
+
   function openEditor(sound) {
     setOptionsOpen(false);
     setEditing(sound);
@@ -401,11 +444,18 @@ function App() {
     if (!editing) return;
     setSaving(true);
     try {
-      await api(`/api/sounds/${editing.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, outputGain: Number(form.outputGain), startSeconds: Number(form.startSeconds), endSeconds: form.endSeconds === '' ? null : Number(form.endSeconds) }),
-      });
-      if (imageFile) { const body = new FormData(); body.append('file', imageFile); await api(`/api/sounds/${editing.id}/image`, { method: 'POST', body }); }
+      if (editing.kind === 'heading') {
+        await api(`/api/sounds/${editing.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: form.name }),
+        });
+      } else {
+        await api(`/api/sounds/${editing.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...form, outputGain: Number(form.outputGain), startSeconds: Number(form.startSeconds), endSeconds: form.endSeconds === '' ? null : Number(form.endSeconds) }),
+        });
+        if (imageFile) { const body = new FormData(); body.append('file', imageFile); await api(`/api/sounds/${editing.id}/image`, { method: 'POST', body }); }
+      }
       await refresh(); setEditing(null); setImageFile(null);
     } catch (error) { setToast(error.message); }
     finally { setSaving(false); }
@@ -480,58 +530,119 @@ function App() {
     setDragState(null);
   }
 
-  return <main className="app-shell" ref={shellRef} onPointerDown={(event) => { if (!event.target.closest('.sound-volume, .volume-trigger')) setVolumeOpenId(null); }}>
-    <header className="topbar" ref={topbarRef}>
-      <div className="top-actions">
-        <button className="select-button arrange-button icon-action" type="button" aria-label={arrangeMode ? 'Finish arranging sounds' : 'Arrange sounds'} title={arrangeMode ? 'Finish arranging' : 'Arrange sounds'} aria-pressed={arrangeMode} onClick={() => { setArrangeMode((value) => !value); setSelectionMode(false); setSelected(new Set()); setVolumeOpenId(null); }}>
-          <Glyph name="arrange" size={19}/><span>{arrangeMode ? 'Done' : 'Arrange'}</span>
-        </button>
-        <button className="select-button icon-action" type="button" aria-label={selectionMode ? 'Finish selecting sounds' : 'Select sounds'} title={selectionMode ? 'Finish selecting' : 'Select sounds'} aria-pressed={selectionMode} onClick={toggleSelection}>
-          {selectionMode ? <><Glyph name="close" size={17}/><span>Done</span></> : <><Glyph name="check" size={17}/><span>Select</span></>}
-        </button>
-        <button className="select-button density-toggle icon-action" type="button" aria-label={`${density} sounds on screen; change visible count`} title="Visible sounds" aria-expanded={densityOpen} aria-controls="density-panel" onClick={() => setDensityOpen((open) => !open)}>
-          <span className="density-toggle-count">{density}</span><span className="density-toggle-label">On screen</span><Glyph name="chevron" size={15}/>
-        </button>
-        <div className="add-menu-wrap" ref={addMenuRef}>
-          <button className="add-button" type="button" aria-label="Add sounds" aria-expanded={addMenuOpen} aria-controls="add-sound-menu" title="Add sounds" disabled={saving} onClick={() => setAddMenuOpen((open) => !open)}>
-            <Glyph name="plus" size={22}/>
-          </button>
-          {addMenuOpen && <div className="add-sound-menu" id="add-sound-menu" role="menu">
-            <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); fileRef.current?.click(); }}><span className="menu-action-icon"><Glyph name="upload" size={18}/></span><span><strong>Upload locally</strong><small>Choose audio from this device</small></span></button>
-            <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); setMarketplaceQuery(''); setMarketplaceOpen(true); }}><span className="menu-action-icon"><Glyph name="globe" size={18}/></span><span><strong>Browse marketplace</strong><small>Discover sounds from MyInstants</small></span></button>
-          </div>}
-        </div>
-        <input ref={fileRef} className="visually-hidden" type="file" multiple accept="audio/*,.mp3,.wav,.m4a,.aac,.wma" onChange={addAudio} />
-      </div>
-    </header>
+  const sectionCounts = new Map();
+  const headingIds = [];
+  const itemSectionMap = new Map();
+  let currentHeadingId = null;
+  for (const item of sounds) {
+    if (item.kind === 'heading') {
+      currentHeadingId = item.id;
+      headingIds.push(item.id);
+      sectionCounts.set(item.id, 0);
+    } else if (currentHeadingId) {
+      sectionCounts.set(currentHeadingId, (sectionCounts.get(currentHeadingId) || 0) + 1);
+      itemSectionMap.set(item.id, currentHeadingId);
+    }
+  }
+  const allHeadingsCollapsed = headingIds.length > 0 && headingIds.every((id) => collapsedHeadings.has(id));
+  const toggleAllHeadings = () => {
+    setCollapsedHeadings(allHeadingsCollapsed ? new Set() : new Set(headingIds));
+  };
+  const playingSectionId = playback.soundId ? itemSectionMap.get(playback.soundId) : null;
+  const gridDensityClass = gridColumns >= 12 ? 'is-dense is-ultra-dense' : gridColumns >= 8 ? 'is-dense' : '';
 
-    <div id="density-panel" className={`density-disclosure ${densityOpen ? 'is-open' : ''}`} aria-hidden={!densityOpen} inert={!densityOpen}>
-      <section className="density-control" ref={densityRef} aria-label="Visible sound buttons">
-        <div className="density-heading"><span>On screen</span><span className="density-readout">{density} <small>buttons</small></span></div>
-        <div className="density-segments" role="group" aria-label="Choose how many sound buttons fit on screen" style={{ '--segment-index': densityOptions.indexOf(density), '--segment-count': densityOptions.length }}>
-          <span className="density-thumb" />
-          {densityOptions.map((count) => <button key={count} type="button" className={density === count ? 'active' : ''} aria-pressed={density === count} onClick={() => setDensity(count)}><span>{count}</span></button>)}
+  return <main className="app-shell" ref={shellRef} onPointerDown={(event) => { if (!event.target.closest('.sound-volume, .volume-trigger')) setVolumeOpenId(null); }}>
+    <div className="board-header">
+      <header className="topbar">
+        <div className="top-actions">
+          <button className="select-button arrange-button icon-action" type="button" aria-label={arrangeMode ? 'Finish arranging sounds' : 'Arrange sounds'} title={arrangeMode ? 'Finish arranging' : 'Arrange sounds'} aria-pressed={arrangeMode} onClick={() => { setArrangeMode((value) => !value); setSelectionMode(false); setSelected(new Set()); setVolumeOpenId(null); }}>
+            <Glyph name="arrange" size={19}/><span>{arrangeMode ? 'Done' : 'Arrange'}</span>
+          </button>
+          <button className="select-button icon-action" type="button" aria-label={selectionMode ? 'Finish selecting sounds' : 'Select sounds'} title={selectionMode ? 'Finish selecting' : 'Select sounds'} aria-pressed={selectionMode} onClick={toggleSelection}>
+            {selectionMode ? <><Glyph name="close" size={17}/><span>Done</span></> : <><Glyph name="check" size={17}/><span>Select</span></>}
+          </button>
+          <button className="select-button density-toggle icon-action" type="button" aria-label={`${gridColumns} columns per row; change grid columns`} title="Columns per row" aria-expanded={columnsOpen} aria-controls="density-panel" onClick={() => setColumnsOpen((open) => !open)}>
+            <span className="density-toggle-count">{gridColumns}</span><span className="density-toggle-label">Columns</span><Glyph name="chevron" size={15}/>
+          </button>
+          <div className="add-menu-wrap" ref={addMenuRef}>
+            <button className="add-button" type="button" aria-label="Add sounds or headings" aria-expanded={addMenuOpen} aria-controls="add-sound-menu" title="Add sounds or headings" disabled={saving} onClick={() => setAddMenuOpen((open) => !open)}>
+              <Glyph name="plus" size={22}/>
+            </button>
+            {addMenuOpen && <div className="add-sound-menu" id="add-sound-menu" role="menu">
+              <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); fileRef.current?.click(); }}><span className="menu-action-icon"><Glyph name="upload" size={18}/></span><span><strong>Upload locally</strong><small>Choose audio from this device</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); setHeadingTitle(''); setHeadingDialogOpen(true); }}><span className="menu-action-icon"><Glyph name="heading" size={18}/></span><span><strong>Add heading</strong><small>Group sounds under a section title</small></span></button>
+              <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); setMarketplaceQuery(''); setMarketplaceOpen(true); }}><span className="menu-action-icon"><Glyph name="globe" size={18}/></span><span><strong>Browse marketplace</strong><small>Discover sounds from MyInstants</small></span></button>
+            </div>}
+          </div>
+          <input ref={fileRef} className="visually-hidden" type="file" multiple accept="audio/*,.mp3,.wav,.m4a,.aac,.wma" onChange={addAudio} />
         </div>
-      </section>
+      </header>
+
+      <div id="density-panel" className={`density-disclosure ${columnsOpen ? 'is-open' : ''}`} aria-hidden={!columnsOpen} inert={!columnsOpen}>
+        <section className="density-control" aria-label="Grid columns">
+          <div className="density-heading">
+            <span>Columns</span>
+            <span className="density-readout">{activeColumnOption === 'auto' ? `Auto · ${gridColumns}` : gridColumns} <small>per row</small></span>
+            {headingIds.length > 0 && <button type="button" className="collapse-all-button" onClick={toggleAllHeadings}>{allHeadingsCollapsed ? 'Expand all' : 'Collapse all'}</button>}
+          </div>
+          <div className="density-segments" role="group" aria-label="Choose how many sound columns to show per row" style={{ '--segment-index': Math.max(0, columnOptions.indexOf(activeColumnOption)), '--segment-count': columnOptions.length }}>
+            <span className="density-thumb" />
+            {columnOptions.map((option) => <button key={option} type="button" className={activeColumnOption === option ? 'active' : ''} aria-pressed={activeColumnOption === option} onClick={() => setColumnPref(option)}><span>{option === 'auto' ? 'Auto' : option}</span></button>)}
+          </div>
+        </section>
+      </div>
+
+      {(selectionMode || arrangeMode) && <div className="selection-bar" aria-live="polite">
+        {arrangeMode ? <span>Press and drag a sound or heading to move it</span> : <span>{selected.size ? `${selected.size} selected` : 'Tap sounds to select'}</span>}
+        {selectionMode && <button className="bulk-delete" type="button" disabled={!selected.size || saving} onClick={bulkDelete}>
+          <Glyph name="trash" size={16}/><span>Delete{selected.size ? ` ${selected.size}` : ''}</span>
+        </button>}
+      </div>}
     </div>
 
-    {(selectionMode || arrangeMode) && <div className="selection-bar" ref={selectionBarRef} aria-live="polite">
-      {arrangeMode ? <span>Press and drag a sound to move it</span> : <span>{selected.size ? `${selected.size} selected` : 'Tap sounds to select'}</span>}
-      {selectionMode && <button className="bulk-delete" type="button" disabled={!selected.size || saving} onClick={bulkDelete}>
-        <Glyph name="trash" size={16}/><span>Delete{selected.size ? ` ${selected.size}` : ''}</span>
-      </button>}
-    </div>}
-
-    {loading ? <div ref={gridRef} className="loading-grid" role="status" aria-label="Loading sounds" aria-busy="true" style={{ '--grid-columns': gridLayout.columns, '--tile-height': `${gridLayout.tileHeight}px` }}>{Array.from({ length: fitLimit }, (_, i) => <div key={i} className="skeleton-tile" style={{ '--tile-index': i }}><span className="skeleton-ripple"/><Glyph name="music" size={28}/><span className="skeleton-wave"><i/><i/><i/><i/><i/></span></div>)}</div>
+    {loading ? <div ref={gridRef} className={`loading-grid ${gridDensityClass}`} role="status" aria-label="Loading sounds" aria-busy="true" style={{ '--grid-columns': gridColumns }}>{Array.from({ length: gridColumns * 2 }, (_, i) => <div key={i} className="skeleton-tile" style={{ '--tile-index': i }}><span className="skeleton-ripple"/><Glyph name="music" size={28}/><span className="skeleton-wave"><i/><i/><i/><i/><i/></span></div>)}</div>
       : sounds.length === 0 ? <section className="empty-state">
         <img src={DEFAULT_ART} alt="" />
         <h1>Your soundboard is empty</h1>
         <p>Use + above to add your first clip.</p>
       </section>
-      : <section ref={gridRef} className={`sound-grid ${arrangeMode ? 'arrange-mode' : ''}`} aria-label="Soundboard" style={{ '--grid-columns': gridLayout.columns, '--tile-height': `${gridLayout.tileHeight}px` }}>
-        {sounds.slice(0, density || sounds.length).map((sound, index) => {
-          const active = playback.soundId === sound.id;
+      : <section ref={gridRef} className={`sound-grid ${arrangeMode ? 'arrange-mode' : ''} ${gridDensityClass}`} aria-label="Soundboard" style={{ '--grid-columns': gridColumns }}>
+        {sounds.map((sound, index) => {
           const checked = selected.has(sound.id);
+          if (sound.kind === 'heading') {
+            const collapsed = !arrangeMode && collapsedHeadings.has(sound.id);
+            const hasPlaying = collapsed && playingSectionId === sound.id;
+            const handleHeadingClick = () => {
+              if (selectionMode) toggleItemSelection(sound.id);
+              else if (!arrangeMode) toggleHeadingCollapsed(sound.id);
+            };
+            return <div
+              key={sound.id}
+              data-sound-id={sound.id}
+              role={!arrangeMode ? 'button' : undefined}
+              tabIndex={!arrangeMode ? 0 : undefined}
+              aria-expanded={!arrangeMode && !selectionMode ? !collapsed : undefined}
+              className={`section-heading-tile ${index === 0 ? 'is-first' : ''} ${!arrangeMode ? 'is-collapsible' : ''} ${collapsed ? 'is-collapsed' : ''} ${hasPlaying ? 'has-playing' : ''} ${checked ? 'is-selected' : ''} ${dragState?.id === sound.id ? 'is-dragging' : ''} ${dragState?.over === sound.id && dragState.id !== sound.id ? 'drop-target' : ''}`}
+              onClick={handleHeadingClick}
+              onKeyDown={(event) => { if (!arrangeMode && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); handleHeadingClick(); } }}
+              onPointerDown={(event) => beginArrange(event, sound)}
+              onPointerMove={moveArrange}
+              onPointerUp={endArrange}
+              onPointerCancel={endArrange}
+            >
+              {selectionMode && <span className={`heading-select-mark ${checked ? 'checked' : ''}`}><Glyph name="check" size={15}/></span>}
+              {arrangeMode && <span className="heading-drag-grip" aria-hidden="true"><Glyph name="arrange" size={16}/></span>}
+              {!arrangeMode && !selectionMode && <span className={`heading-chevron ${collapsed ? 'is-collapsed' : ''}`} aria-hidden="true"><Glyph name="chevron" size={16}/></span>}
+              <h2 className="section-heading-title">{sound.name}</h2>
+              <span className="section-heading-count">{sectionCounts.get(sound.id) || 0}</span>
+              {hasPlaying && <span className="heading-playing-dot" aria-label="Sound playing in this section" />}
+              <span className="section-heading-line" aria-hidden="true" />
+              {!selectionMode && !arrangeMode && <button className="heading-edit-trigger" type="button" aria-label={`Edit heading ${sound.name}`} onClick={(event) => { event.stopPropagation(); openEditor(sound); }}><Glyph name="dots" size={18}/></button>}
+            </div>;
+          }
+          const ownerHeadingId = itemSectionMap.get(sound.id);
+          if (!arrangeMode && ownerHeadingId && collapsedHeadings.has(ownerHeadingId)) return null;
+          const active = playback.soundId === sound.id;
           const progress = active && sound.duration > 0 ? Math.max(0, Math.min(1, (playback.positionSeconds - sound.startSeconds) / sound.duration)) : 0;
           return <article key={sound.id} data-sound-id={sound.id} className={`sound-card ${active ? 'is-playing' : ''} ${checked ? 'is-selected' : ''} ${dragState?.id === sound.id ? 'is-dragging' : ''} ${dragState?.over === sound.id && dragState.id !== sound.id ? 'drop-target' : ''}`} style={{ '--tile-index': index }} onPointerDown={(event) => beginArrange(event, sound)} onPointerMove={moveArrange} onPointerUp={endArrange} onPointerCancel={endArrange}>
             <button className="sound-trigger" type="button" aria-label={`${selectionMode ? (checked ? 'Deselect' : 'Select') : active ? 'Stop' : 'Play'} ${sound.buttonLabel || sound.name}`} aria-pressed={selectionMode ? checked : active} onClick={() => play(sound)}>
@@ -556,8 +667,25 @@ function App() {
 
     {toast && <div className="toast" role="alert">{toast}</div>}
 
+    <dialog ref={headingDialogRef} className="edit-dialog heading-dialog" onClose={() => { setHeadingDialogOpen(false); setHeadingTitle(''); }} onClick={(event) => { if (event.target === headingDialogRef.current) headingDialogRef.current.close(); }}>
+      {headingDialogOpen && <form onSubmit={createHeading}>
+        <div className="dialog-head"><div><h2>Add heading</h2><p>Create a section title to group sounds (drag items in Arrange mode).</p></div><button className="dialog-close" type="button" aria-label="Close heading dialog" onClick={() => headingDialogRef.current?.close()}><Glyph name="close"/></button></div>
+        <div className="form-fields">
+          <label className="field">Heading title<input autoFocus value={headingTitle} maxLength={100} required placeholder="e.g. Star Wars, Werner, Alltag" onChange={(event) => setHeadingTitle(event.target.value)}/></label>
+          <div className="field"><span>Insert position</span><div className="behavior-switch" role="group" aria-label="Insert position"><button type="button" className={headingPosition === 'top' ? 'active' : ''} aria-pressed={headingPosition === 'top'} onClick={() => setHeadingPosition('top')}>Top</button><button type="button" className={headingPosition === 'bottom' ? 'active' : ''} aria-pressed={headingPosition === 'bottom'} onClick={() => setHeadingPosition('bottom')}>Bottom</button></div></div>
+        </div>
+        <div className="dialog-actions"><button className="remove-art" type="button" onClick={() => headingDialogRef.current?.close()}>Cancel</button><button className="save-button" type="submit" disabled={saving || !headingTitle.trim()}>{saving ? 'Adding…' : 'Add heading'}</button></div>
+      </form>}
+    </dialog>
+
     <dialog ref={dialogRef} className="edit-dialog" onClose={() => { setEditing(null); setImageFile(null); setRecordingHotkey(false); }} onClick={(event) => { if (event.target === dialogRef.current) dialogRef.current.close(); }}>
-      {editing && <form onSubmit={saveEdit}>
+      {editing && (editing.kind === 'heading' ? <form onSubmit={saveEdit}>
+        <div className="dialog-head"><div><h2>Edit heading</h2><p>Rename or remove this section title.</p></div><button className="dialog-close" type="button" aria-label="Close editor" onClick={() => dialogRef.current?.close()}><Glyph name="close"/></button></div>
+        <div className="form-fields">
+          <label className="field">Heading title<input autoFocus value={form.name} maxLength={100} required onChange={(event) => setForm({ ...form, name: event.target.value })}/></label>
+        </div>
+        <div className="dialog-actions"><button className="delete-one" type="button" onClick={deleteOne}>Delete</button><button className="save-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></div>
+      </form> : <form onSubmit={saveEdit}>
         <div className="dialog-head"><div><h2>Edit sound</h2><p>Make this button yours.{editing.sourceUrl && <> <a className="sound-source-link" href={editing.sourceUrl} target="_blank" rel="noreferrer">From MyInstants <Glyph name="external" size={12}/></a></>}</p></div><button className="dialog-close" type="button" aria-label="Close editor" onClick={() => dialogRef.current?.close()}><Glyph name="close"/></button></div>
         <label className="artwork-picker">
           <img src={preview || editing.imageUrl || DEFAULT_ART} alt="Sound artwork preview" />
@@ -579,7 +707,7 @@ function App() {
           </div>
         </div>
         <div className="dialog-actions"><button className="remove-art" type="button" onClick={resetArtwork}>Use default image</button><button className="delete-one" type="button" onClick={deleteOne}>Delete</button><button className="save-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></div>
-      </form>}
+      </form>)}
     </dialog>
 
     <dialog ref={marketplaceDialogRef} className="marketplace-dialog" aria-labelledby="marketplace-title" onClose={() => { setMarketplaceOpen(false); previewAudioRef.current?.pause(); setPreviewId(null); }} onClick={(event) => { if (event.target === marketplaceDialogRef.current) marketplaceDialogRef.current.close(); }}>

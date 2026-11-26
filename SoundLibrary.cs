@@ -18,7 +18,7 @@ public sealed class SoundLibrary(Storage storage)
         {
             lock (_gate)
                 return _hotkeyAssignments ??= Array.AsReadOnly(_sounds
-                    .Where(sound => !string.IsNullOrWhiteSpace(sound.Hotkey))
+                    .Where(sound => !sound.IsHeading && !string.IsNullOrWhiteSpace(sound.Hotkey))
                     .Select(sound => new SoundHotkeyAssignment(sound.Id, sound.Name, sound.Hotkey!))
                     .ToArray());
         }
@@ -53,6 +53,33 @@ public sealed class SoundLibrary(Storage storage)
         catch { File.Delete(sourcePath); File.Delete(cachePath); throw; }
     }
 
+    public Sound AddHeading(string name)
+    {
+        var cleaned = Regex.Replace(name ?? string.Empty, @"[\p{C}]", "").Trim();
+        if (cleaned.Length is < 1 or > 100) throw new ArgumentException("Heading name must contain 1 to 100 characters.");
+        var heading = new Sound
+        {
+            Id = Guid.NewGuid(),
+            Kind = "heading",
+            Name = cleaned,
+            SourceFilename = "",
+            StoredFilename = "",
+            SourceDurationSeconds = 0,
+            OutputGain = 0.75f,
+            Mode = "toggle",
+        };
+        lock (_gate)
+        {
+            heading.SortOrder = _sounds.Count;
+            storage.Save(heading);
+            _sounds.Add(heading);
+            _hotkeyAssignments = null;
+        }
+        var snapshot = Clone(heading);
+        Changed?.Invoke("sound-added", snapshot);
+        return snapshot;
+    }
+
     public Sound Update(Guid id, Action<Sound> change)
     {
         Sound result;
@@ -61,22 +88,37 @@ public sealed class SoundLibrary(Storage storage)
             var index = _sounds.FindIndex(x => x.Id == id);
             if (index < 0) throw new KeyNotFoundException("Sound not found.");
             var s = Clone(_sounds[index]);
+            var wasHeading = s.IsHeading;
             change(s);
-            s.Name = s.Name.Trim();
+            s.Kind = wasHeading ? "heading" : "sound";
+            s.Name = Regex.Replace(s.Name ?? string.Empty, @"[\p{C}]", "").Trim();
             if (s.Name.Length is < 1 or > 100) throw new ArgumentException("Name must contain 1 to 100 characters.");
-            s.Hotkey = SoundHotkey.Normalize(s.Hotkey);
-            if (s.Hotkey is not null && _sounds.Where((_, soundIndex) => soundIndex != index).Any(sound => string.Equals(sound.Hotkey, s.Hotkey, StringComparison.OrdinalIgnoreCase)))
-                throw new ArgumentException("That hotkey is already assigned to another sound.");
-            s.Volume = Math.Clamp(s.Volume, 0, 1);
-            s.OutputGain = Math.Clamp(s.OutputGain, 0, 1);
-            var minimumSegment = Math.Min(.01, Math.Max(0, s.SourceDurationSeconds));
-            s.StartSeconds = Math.Clamp(s.StartSeconds, 0, Math.Max(0, s.SourceDurationSeconds - minimumSegment));
-            if (s.EndSeconds is not null)
+            if (s.IsHeading)
             {
-                var minimumEnd = Math.Min(s.SourceDurationSeconds, s.StartSeconds + minimumSegment);
-                s.EndSeconds = Math.Clamp(s.EndSeconds.Value, minimumEnd, s.SourceDurationSeconds);
+                if (!string.IsNullOrWhiteSpace(s.Hotkey)) throw new ArgumentException("Headings cannot have a keyboard shortcut.");
+                s.Hotkey = null;
+                s.ButtonLabel = null;
+                s.ImageFilename = null;
+                s.StartSeconds = 0;
+                s.EndSeconds = null;
+                s.Mode = "toggle";
             }
-            if (s.Mode is not ("toggle" or "retrigger")) throw new ArgumentException("Invalid playback mode.");
+            else
+            {
+                s.Hotkey = SoundHotkey.Normalize(s.Hotkey);
+                if (s.Hotkey is not null && _sounds.Where((_, soundIndex) => soundIndex != index).Any(sound => string.Equals(sound.Hotkey, s.Hotkey, StringComparison.OrdinalIgnoreCase)))
+                    throw new ArgumentException("That hotkey is already assigned to another sound.");
+                s.Volume = Math.Clamp(s.Volume, 0, 1);
+                s.OutputGain = Math.Clamp(s.OutputGain, 0, 1);
+                var minimumSegment = Math.Min(.01, Math.Max(0, s.SourceDurationSeconds));
+                s.StartSeconds = Math.Clamp(s.StartSeconds, 0, Math.Max(0, s.SourceDurationSeconds - minimumSegment));
+                if (s.EndSeconds is not null)
+                {
+                    var minimumEnd = Math.Min(s.SourceDurationSeconds, s.StartSeconds + minimumSegment);
+                    s.EndSeconds = Math.Clamp(s.EndSeconds.Value, minimumEnd, s.SourceDurationSeconds);
+                }
+                if (s.Mode is not ("toggle" or "retrigger")) throw new ArgumentException("Invalid playback mode.");
+            }
             storage.Save(s); _sounds[index] = s; _hotkeyAssignments = null; result = Clone(s);
         }
         Changed?.Invoke("sound-changed", result);
@@ -104,8 +146,11 @@ public sealed class SoundLibrary(Storage storage)
         }
         foreach (var sound in removed)
         {
-            TryDeleteAsset(Path.Combine(storage.SoundsPath, sound.Id + Path.GetExtension(sound.SourceFilename).ToLowerInvariant()));
-            TryDeleteAsset(Path.Combine(storage.CachePath, sound.StoredFilename));
+            if (sound.IsHeading) continue;
+            if (!string.IsNullOrWhiteSpace(sound.SourceFilename))
+                TryDeleteAsset(Path.Combine(storage.SoundsPath, sound.Id + Path.GetExtension(sound.SourceFilename).ToLowerInvariant()));
+            if (!string.IsNullOrWhiteSpace(sound.StoredFilename))
+                TryDeleteAsset(Path.Combine(storage.CachePath, sound.StoredFilename));
             if (sound.ImageFilename is not null) TryDeleteAsset(Path.Combine(storage.ImagesPath, sound.ImageFilename));
         }
         if (removed.Count == 1) Changed?.Invoke("sound-deleted", new { id = removed[0].Id });

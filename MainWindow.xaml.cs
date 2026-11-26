@@ -123,7 +123,7 @@ public partial class MainWindow : Window
         }
         RefreshAll();
     }
-    private void Play_Click(object sender, RoutedEventArgs e) { if (Selected is { } s) Act(() => _core.Play(s.Id)); }
+    private void Play_Click(object sender, RoutedEventArgs e) { if (Selected is { IsHeading: false } s) Act(() => _core.Play(s.Id)); }
     private void Edit_Click(object sender, RoutedEventArgs e) { if (Selected is { } s) new SoundEditor(_core, s) { Owner = this }.ShowDialog(); }
     private void Grid_DoubleClick(object sender, MouseButtonEventArgs e) => Edit_Click(sender, e);
     private void Delete_Click(object sender, RoutedEventArgs e)
