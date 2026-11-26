@@ -6,13 +6,20 @@ namespace VRSoundboard;
 public sealed class Storage
 {
     public string Root { get; }
+    public bool IsPortableMode { get; }
     public string SoundsPath => Path.Combine(Root, "sounds");
     public string CachePath => Path.Combine(Root, "cache");
     public string ImagesPath => Path.Combine(Root, "images");
     public string LogsPath => Path.Combine(Root, "logs");
     private string DbPath => Path.Combine(Root, "database", "library.db");
-    public Storage(string? localAppDataPath = null)
+    public Storage(string? localAppDataPath = null, string? explicitRootPath = null)
     {
+        if (!string.IsNullOrWhiteSpace(explicitRootPath))
+        {
+            Root = Path.GetFullPath(explicitRootPath);
+            IsPortableMode = true;
+            return;
+        }
         var localAppData = localAppDataPath ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var current = Path.Combine(localAppData, "SimplySound");
         // Keep existing libraries intact across the Soundboardify → SimplySound rebrand.
@@ -187,5 +194,40 @@ public sealed class Storage
     {
         using var db = Connect(); using var cmd = db.CreateCommand(); cmd.CommandText = "INSERT INTO settings(key,json) VALUES('app',$json) ON CONFLICT(key) DO UPDATE SET json=$json";
         cmd.Parameters.AddWithValue("$json", JsonSerializer.Serialize(settings)); cmd.ExecuteNonQuery();
+    }
+    public void ReplaceAllSounds(IReadOnlyList<Sound> sounds)
+    {
+        using var db = Connect();
+        using var transaction = db.BeginTransaction();
+        using (var clear = db.CreateCommand())
+        {
+            clear.Transaction = transaction;
+            clear.CommandText = "DELETE FROM sounds";
+            clear.ExecuteNonQuery();
+        }
+        using (var insert = db.CreateCommand())
+        {
+            insert.Transaction = transaction;
+            insert.CommandText = "INSERT INTO sounds(id,sort_order,json) VALUES($id,$order,$json)";
+            var idParameter = insert.Parameters.Add("$id", SqliteType.Text);
+            var orderParameter = insert.Parameters.Add("$order", SqliteType.Integer);
+            var jsonParameter = insert.Parameters.Add("$json", SqliteType.Text);
+            foreach (var sound in sounds)
+            {
+                idParameter.Value = sound.Id.ToString();
+                orderParameter.Value = sound.SortOrder;
+                jsonParameter.Value = JsonSerializer.Serialize(sound);
+                insert.ExecuteNonQuery();
+            }
+        }
+        transaction.Commit();
+    }
+    public void BackupDatabaseTo(string destinationDbPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationDbPath)!);
+        using var source = Connect();
+        using var destination = new SqliteConnection($"Data Source={destinationDbPath};Pooling=False");
+        destination.Open();
+        source.BackupDatabase(destination);
     }
 }

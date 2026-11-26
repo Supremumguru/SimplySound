@@ -620,3 +620,23 @@
   .options-only .welcome-finish-card { margin-top: 14px; padding-block: 10px; }
   .options-only .welcome-hint { margin-top: 8px; }
 }
+
+/* Library, portable storage and ZIP backup controls. */
+.options-only .nav-symbol-library { background: #3f7e68; color: white; }
+.options-only .library-section + .library-section { margin-top: 16px; }
+.options-only .portable-status-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 0 12px; }
+.options-only .portable-status-row > div { display: grid; gap: 3px; }
+.options-only .portable-status-row strong { font-size: 13px; font-weight: 550; }
+.options-only .portable-status-row small { color: var(--desk-muted); font-size: 11px; }
+.options-only .storage-path-box { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #222327; border: 1px solid #42434a; border-radius: 7px; }
+.options-only .storage-path-box code { flex: 1; min-width: 0; overflow: hidden; color: #d8dce6; font: 11px/1.4 'Cascadia Code', 'Consolas', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.options-only .library-note { margin: 14px 0 0; color: var(--desk-muted); font-size: 12px; line-height: 1.55; }
+.options-only .library-note strong { color: var(--desk-text); font-weight: 550; }
+.options-only .library-note code, .options-only .library-subpath code { padding: 1px 5px; color: #d9e6ff; background: #222327; border: 1px solid #3a3b40; border-radius: 4px; font: 11px 'Cascadia Code', 'Consolas', monospace; }
+.options-only .library-subpath { margin: 8px 0 0; color: var(--desk-subtle); font-size: 11px; overflow-wrap: anywhere; }
+.options-only .library-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+.options-only .library-primary-btn { margin-top: 0; gap: 8px; }
+.options-only .secondary-action { display: inline-flex; min-height: 36px; align-items: center; gap: 7px; padding: 0 12px; color: var(--desk-text); background: #34353b; border: 1px solid var(--desk-line-strong); border-radius: 6px; font-size: 11px; font-weight: 500; white-space: nowrap; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.options-only .secondary-action:hover:not(:disabled) { background: #3f4148; border-color: #62646f; }
+.options-only .secondary-action:disabled { opacity: .5; cursor: wait; }
+.options-only .library-import-btn { min-height: 38px; padding: 0 14px; }

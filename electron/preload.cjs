@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld('SimplySoundDesktop', Object.freeze({
   checkForUpdates: () => ipcRenderer.invoke('SimplySound:check-updates'),
   openRelease: url => ipcRenderer.invoke('SimplySound:open-release', url),
   openSoundboard: () => ipcRenderer.invoke('SimplySound:open-soundboard'),
+  openDataFolder: () => ipcRenderer.invoke('SimplySound:open-data-folder'),
+  enablePortableMode: () => ipcRenderer.invoke('SimplySound:enable-portable-mode'),
+  exportLibrary: () => ipcRenderer.invoke('SimplySound:export-library'),
+  importLibrary: () => ipcRenderer.invoke('SimplySound:import-library'),
   onSoundboardLaunchError: callback => {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, message) => callback(String(message || 'Could not open the soundboard in your default browser.'));

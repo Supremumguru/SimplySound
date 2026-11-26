@@ -26,6 +26,68 @@ public sealed class SoundLibrary(Storage storage)
     public Sound? Get(Guid id) { lock (_gate) return _sounds.Where(s => s.Id == id).Select(Clone).FirstOrDefault(); }
     private static Sound Clone(Sound s) => s.Copy();
 
+    public string? FindSourceAudioPath(Sound sound)
+    {
+        var ext = Path.GetExtension(sound.SourceFilename).ToLowerInvariant();
+        if (!string.IsNullOrEmpty(ext))
+        {
+            var direct = Path.Combine(storage.SoundsPath, sound.Id + ext);
+            if (File.Exists(direct)) return direct;
+        }
+        foreach (var candidateExt in new[] { ".mp3", ".wav", ".m4a", ".aac", ".wma" })
+        {
+            var candidate = Path.Combine(storage.SoundsPath, sound.Id + candidateExt);
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    public void EnsureCachedWave(Sound sound)
+    {
+        if (string.IsNullOrWhiteSpace(sound.StoredFilename)) return;
+        var cachePath = Path.Combine(storage.CachePath, sound.StoredFilename);
+        if (File.Exists(cachePath)) return;
+        var sourcePath = FindSourceAudioPath(sound);
+        if (sourcePath is null) return;
+        Directory.CreateDirectory(storage.CachePath);
+        var tempPath = cachePath + ".rebuild-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            using (var reader = new AudioFileReader(sourcePath))
+                WaveFileWriter.CreateWaveFile16(tempPath, reader);
+            File.Move(tempPath, cachePath, overwrite: true);
+            Log.Information("Rebuilt missing WAV cache for sound {SoundId}", sound.Id);
+        }
+        catch
+        {
+            TryDeleteAsset(tempPath);
+            throw;
+        }
+    }
+
+    internal IReadOnlyList<Sound> ReplaceAll(IReadOnlyList<Sound> sounds)
+    {
+        List<Sound> previous;
+        List<Sound> normalized;
+        lock (_gate)
+        {
+            previous = _sounds.Select(Clone).ToList();
+            normalized = new List<Sound>(sounds.Count);
+            for (var i = 0; i < sounds.Count; i++)
+            {
+                var copy = Clone(sounds[i]);
+                copy.SortOrder = i;
+                normalized.Add(copy);
+            }
+            storage.ReplaceAllSounds(normalized);
+            _sounds.Clear();
+            _sounds.AddRange(normalized);
+            _hotkeyAssignments = null;
+        }
+        Changed?.Invoke("library-imported", new { count = normalized.Count });
+        return previous;
+    }
+
     public async Task<Sound> ImportAsync(Stream stream, string filename, CancellationToken ct = default)
     {
         var ext = Path.GetExtension(filename).ToLowerInvariant();

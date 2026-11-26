@@ -19,6 +19,9 @@ function Icon({ name, size = 18 }) {
     settings: <><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="currentColor" stroke="none"/><circle cx="15" cy="17" r="3" fill="currentColor" stroke="none"/></>,
     chevron: <path d="m9 18 6-6-6-6"/>,
     arrow: <><path d="M7 17 17 7M7 7h10v10"/></>,
+    folder: <><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></>,
+    download: <><path d="M12 4v11m0 0 4-4m-4 4-4-4M4 18h16"/></>,
+    upload: <><path d="M12 15V4m0 0 4 4m-4-4-4 4M4 18h16"/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -107,6 +110,8 @@ export default function DesktopApp() {
   const [deviceLoadError, setDeviceLoadError] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [status, setStatus] = useState(null);
+  const [storageInfo, setStorageInfo] = useState(null);
+  const [libraryBusy, setLibraryBusy] = useState('');
   const [portDraft, setPortDraft] = useState('6769');
   const [editingPort, setEditingPort] = useState(false);
   const [pairDraft, setPairDraft] = useState('');
@@ -138,8 +143,8 @@ export default function DesktopApp() {
   const welcomeDialogRef = useRef(null);
 
   async function refresh() {
-    const [settingsResult, statusResult] = await Promise.allSettled([
-      request('/api/settings'), request('/api/status'),
+    const [settingsResult, statusResult, storageResult] = await Promise.allSettled([
+      request('/api/settings'), request('/api/status'), request('/api/storage/info'),
     ]);
     if (settingsResult.status === 'rejected') {
       const message = settingsResult.reason?.message || 'The settings service did not respond.';
@@ -153,6 +158,7 @@ export default function DesktopApp() {
     setPortDraft(String(nextSettings.port));
     setLoadError('');
     if (statusResult.status === 'fulfilled') setStatus(statusResult.value);
+    if (storageResult.status === 'fulfilled') setStorageInfo(storageResult.value);
   }
   const refreshDevices = useCallback(async () => {
     try {
@@ -221,6 +227,10 @@ export default function DesktopApp() {
     refreshHotkeys();
     const timer = setInterval(refreshHotkeys, 2500);
     return () => clearInterval(timer);
+  }, [activeSection]);
+  useEffect(() => {
+    if (activeSection !== 'library') return;
+    request('/api/storage/info').then(setStorageInfo).catch(() => {});
   }, [activeSection]);
   useEffect(() => () => { clearTimeout(masterTimer.current); clearTimeout(micGainTimer.current); }, []);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 3500); return () => clearTimeout(timer); }, [toast]);
@@ -349,6 +359,55 @@ export default function DesktopApp() {
       setToast(error?.message || 'Could not open the soundboard in your default browser.');
     } finally { setLaunchingSoundboard(false); }
   }
+  async function openDataFolder() {
+    const open = window.SimplySoundDesktop?.openDataFolder;
+    if (!open) { setToast('Open the SimplySound desktop app to open the data folder.'); return; }
+    try { await open(); }
+    catch (error) { setToast(error?.message || 'Could not open the data folder.'); }
+  }
+  async function enablePortableMode() {
+    const action = window.SimplySoundDesktop?.enablePortableMode;
+    if (!action) { setToast('Open the SimplySound desktop app to switch to Portable Mode.'); return; }
+    setLibraryBusy('portable');
+    try {
+      const result = await action();
+      if (result?.canceled) return;
+      setToast(result?.alreadyActive ? 'Portable Mode is already active.' : 'Switching to Portable Mode…');
+    } catch (error) {
+      setToast(error?.message || 'Could not switch to Portable Mode.');
+    } finally { setLibraryBusy(''); }
+  }
+  async function exportLibrary() {
+    const action = window.SimplySoundDesktop?.exportLibrary;
+    if (!action) {
+      window.location.assign('/api/library/export');
+      return;
+    }
+    setLibraryBusy('export');
+    try {
+      const result = await action();
+      if (result?.canceled) return;
+      const mb = result?.bytes ? ` (${(result.bytes / (1024 * 1024)).toFixed(1)} MB)` : '';
+      setToast(`Library backup saved${mb}`);
+    } catch (error) {
+      setToast(error?.message || 'Could not export the library.');
+    } finally { setLibraryBusy(''); }
+  }
+  async function importLibrary() {
+    const action = window.SimplySoundDesktop?.importLibrary;
+    if (!action) { setToast('Open the SimplySound desktop app to import a backup.'); return; }
+    setLibraryBusy('import');
+    try {
+      const result = await action();
+      if (result?.canceled) return;
+      await refresh();
+      const parts = [`${result?.sounds ?? 0} ${result?.sounds === 1 ? 'sound' : 'sounds'}`];
+      if (result?.headings) parts.push(`${result.headings} ${result.headings === 1 ? 'heading' : 'headings'}`);
+      setToast(`Imported ${parts.join(' and ')}`);
+    } catch (error) {
+      setToast(error?.message || 'Could not import the library backup.');
+    } finally { setLibraryBusy(''); }
+  }
 
   const appClass = 'desktop-app options-only';
   const wifiUrl = status?.wifiUrl || status?.url;
@@ -372,12 +431,14 @@ export default function DesktopApp() {
     { id: 'overview', label: 'Overview', icon: 'settings' },
     { id: 'audio', label: 'Audio', icon: 'volume' },
     { id: 'network', label: 'Phone access', icon: 'phone' },
+    { id: 'library', label: 'Library', icon: 'folder' },
     { id: 'updates', label: 'Updates', icon: 'refresh' },
   ];
   const sectionCopy = {
     overview: ['Overview', 'Your soundboard, at a glance.'],
     audio: ['Audio', 'Choose where your sounds play.'],
     network: ['Phone access', 'Choose how your phone connects to this PC.'],
+    library: ['Library & portable', 'Keep your soundboard portable and back up or transfer everything in one click.'],
     updates: ['Updates', 'Check your version and review new releases.'],
   }[activeSection];
   return <main className={appClass}>
@@ -425,6 +486,7 @@ export default function DesktopApp() {
           <div className="overview-summary" aria-label="Connection settings">
           <div className="summary-row port-row"><span>Web UI port</span>{editingPort ? <div className="port-edit"><input autoFocus aria-label="Web UI port" inputMode="numeric" type="number" min="1024" max="65535" value={portDraft} onChange={event => setPortDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') applyPort(); if (event.key === 'Escape') setEditingPort(false); }}/><button disabled={busy} onClick={applyPort}>{busy ? 'Saving…' : 'Apply'}</button></div> : <button className="port-value" onClick={() => { setPortDraft(String(settings.port)); setEditingPort(true); }} aria-label={`Change web UI port, currently ${port}`}><strong>{port}</strong><span>Edit</span></button>}</div>
           <button type="button" className="summary-row" onClick={() => setActiveSection('network')}><span>Network & privacy</span><strong>{settings.pairingEnabled ? 'Pairing enabled' : 'Manage access'}<Icon name="chevron" size={14}/></strong></button>
+          <button type="button" className="summary-row" onClick={() => setActiveSection('library')}><span>Library & portable</span><strong>{storageInfo?.portableMode ? 'Portable (next to EXE)' : 'Standard · Backup & portable'}<Icon name="chevron" size={14}/></strong></button>
         </div>
         </>}
         {activeSection === 'audio' && <div className="settings-columns single-column">
@@ -471,6 +533,46 @@ export default function DesktopApp() {
           </section>
         </div>
         }
+        {activeSection === 'library' && <div className="settings-columns single-column">
+          <section className="settings-section library-section">
+            <div className="section-heading"><h2>Portable mode</h2></div>
+            <div className="portable-status-row">
+              <div>
+                <strong>{storageInfo?.portableMode ? 'Portable mode is active' : 'Standard Windows storage'}</strong>
+                <small>{storageInfo ? `${storageInfo.soundCount} ${storageInfo.soundCount === 1 ? 'sound' : 'sounds'}${storageInfo.headingCount ? ` · ${storageInfo.headingCount} ${storageInfo.headingCount === 1 ? 'heading' : 'headings'}` : ''}` : 'Loading library info…'}</small>
+              </div>
+              <span className={`pairing-state ${storageInfo?.portableMode ? 'protected' : ''}`}><i/>{storageInfo?.portableMode ? 'Portable' : 'AppData'}</span>
+            </div>
+            {storageInfo?.dataRoot && <div className="storage-path-box">
+              <code>{storageInfo.dataRoot}</code>
+              <button type="button" className="secondary-action" onClick={openDataFolder}><Icon name="folder" size={14}/><span>Open folder</span></button>
+            </div>}
+            {storageInfo?.portableMode ? (
+              <p className="library-note">All sounds, cover images, headings and settings live inside <strong>SimplySoundData</strong> next to SimplySound. Copy SimplySound together with this folder to take your complete board to another Windows PC.</p>
+            ) : (
+              <>
+                <p className="library-note">Copy your entire library into <strong>SimplySoundData</strong> right next to SimplySound so everything travels with the app — no manual AppData copying needed.</p>
+                {storageInfo?.portableTargetDir && <p className="library-subpath">Target folder: <code>{storageInfo.portableTargetDir}</code></p>}
+                <button type="button" className="firewall-action" onClick={enablePortableMode} disabled={Boolean(libraryBusy) || !storageInfo?.portableTargetDir}>
+                  <span>{libraryBusy === 'portable' ? 'Copying library…' : 'Switch to Portable Mode'}</span><Icon name="arrow" size={14}/>
+                </button>
+              </>
+            )}
+          </section>
+
+          <section className="settings-section library-section">
+            <div className="section-heading"><h2>Backup &amp; transfer (.zip)</h2></div>
+            <p className="library-note">Save all sounds, cover images, section headings, button order, hotkeys and volume settings into one compact <code>.zip</code> file, or load a backup on another PC. Your audio device choices on this PC stay intact.</p>
+            <div className="library-actions">
+              <button type="button" className="firewall-action library-primary-btn" onClick={exportLibrary} disabled={Boolean(libraryBusy)}>
+                <Icon name="download" size={15}/><span>{libraryBusy === 'export' ? 'Exporting…' : 'Export library (.zip)'}</span>
+              </button>
+              <button type="button" className="secondary-action library-import-btn" onClick={importLibrary} disabled={Boolean(libraryBusy)}>
+                <Icon name="upload" size={15}/><span>{libraryBusy === 'import' ? 'Importing…' : 'Import library (.zip)'}</span>
+              </button>
+            </div>
+          </section>
+        </div>}
         {activeSection === 'updates' && <>
         <footer className="version-footer" aria-label="Application version and updates">
           <div className="version-information"><span>Version <strong>{appVersion ? `v${appVersion}` : '—'}</strong></span><span className={`version-message ${updateState}`} role="status" aria-live="polite">{updateMessage}</span></div>

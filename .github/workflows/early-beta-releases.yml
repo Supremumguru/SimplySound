@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   mark-early-beta:
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease
     runs-on: ubuntu-latest
     steps:
       - name: Label the published release as Early Beta

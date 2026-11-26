@@ -77,9 +77,10 @@ public sealed class WebSocketHub
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 }
 
-public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hub, SteamMicDiagnostic diagnostic, MarketplaceService marketplace)
+public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hub, SteamMicDiagnostic diagnostic, MarketplaceService marketplace, LibraryBundleService bundles)
 {
     private const long MaximumUploadBytes = 200L * 1024 * 1024;
+    private const long MaximumLibraryImportBytes = 1024L * 1024 * 1024;
     private const long ImageUploadBytes = 5L * 1024 * 1024;
     private const long MultipartOverheadBytes = 1024 * 1024;
     private WebApplication? _app;
@@ -316,11 +317,69 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
         app.MapPost("/api/audio/test", () => { try { var settings = coordinator.Settings; TestTone.Play(coordinator.Audio, settings.MasterVolume, coordinator.Storage, settings.MonitorLocally, settings.MonitorEndpointId, settings.UseVirtualMicHeadroom); return Results.Ok(); } catch (Exception ex) { return Results.Problem(ex.Message); } });
         app.MapPost("/api/audio/diagnose", async (HttpContext context) =>
         {
-            var remote = context.Connection.RemoteIpAddress;
-            if (remote?.IsIPv4MappedToIPv6 == true) remote = remote.MapToIPv4();
-            if (remote is null || !System.Net.IPAddress.IsLoopback(remote)) return Results.Forbid();
+            if (!IsLoopbackRequest(context)) return Results.Forbid();
             try { return Results.Ok(await diagnostic.RunAsync(context.RequestAborted)); }
             catch (Exception ex) { Log.Error(ex, "Steam microphone path check failed"); return Results.Problem(ex.Message); }
+        });
+        app.MapGet("/api/storage/info", (HttpContext context) =>
+        {
+            if (!IsLoopbackRequest(context)) return Results.Forbid();
+            var items = coordinator.Library.All;
+            return Results.Ok(new
+            {
+                portableMode = coordinator.Storage.IsPortableMode,
+                dataRoot = coordinator.Storage.Root,
+                portableTargetDir = bundles.PortableTargetDirectory,
+                soundCount = items.Count(item => !item.IsHeading),
+                headingCount = items.Count(item => item.IsHeading)
+            });
+        });
+        app.MapPost("/api/storage/enable-portable", async (HttpContext context) =>
+        {
+            if (!IsLoopbackRequest(context)) return Results.Forbid();
+            try
+            {
+                var portablePath = await bundles.CopyCurrentDataToPortableAsync(context.RequestAborted);
+                return Results.Ok(new { portablePath });
+            }
+            catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
+            catch (Exception ex) { Log.Error(ex, "Could not prepare portable data folder"); return Results.Problem(ex.Message); }
+        });
+        app.MapGet("/api/library/export", async (HttpContext context) =>
+        {
+            if (!IsLoopbackRequest(context)) return Results.Forbid();
+            var tempPath = Path.Combine(Path.GetTempPath(), $"SimplySound-export-{Guid.NewGuid():N}.zip");
+            try
+            {
+                await using (var tempFile = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    await bundles.ExportZipAsync(tempFile, context.RequestAborted);
+                var stamp = DateTime.Now.ToString("yyyy-MM-dd");
+                var info = new FileInfo(tempPath);
+                context.Response.ContentType = "application/zip";
+                context.Response.ContentLength = info.Length;
+                context.Response.Headers["Content-Disposition"] = $"attachment; filename=\"SimplySound-Library-{stamp}.zip\"";
+                context.Response.Headers["Cache-Control"] = "no-store";
+                await using var readStream = new FileStream(tempPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+                await readStream.CopyToAsync(context.Response.Body, context.RequestAborted);
+                return Results.Empty;
+            }
+            finally
+            {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            }
+        });
+        app.MapPost("/api/library/import", async (HttpContext context) =>
+        {
+            if (!IsLoopbackRequest(context)) return Results.Forbid();
+            try
+            {
+                var result = await bundles.ImportZipAsync(context.Request.Body, context.RequestAborted);
+                return Results.Ok(result);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(ex.Message); }
+            catch (Exception ex) when (ex is NotSupportedException or NAudio.MmException or System.Runtime.InteropServices.COMException)
+            { Log.Warning(ex, "Library backup contained an unreadable audio file"); return Results.BadRequest("One of the audio files in this backup could not be decoded."); }
+            catch (Exception ex) { Log.Error(ex, "Library backup import failed"); return Results.Problem(ex.Message); }
         });
         app.Map("/ws", async context => { if (context.WebSockets.IsWebSocketRequest) await hub.Accept(context); else context.Response.StatusCode = 400; });
         try { await app.StartAsync(); _app = app; coordinator.SetActiveWebPort(port); StartedOnPort?.Invoke(port); LastError = null; Log.Information("Web server started on port {Port}", port); }
@@ -335,6 +394,8 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
     public static int FallbackPort(int preferred) => preferred == 6669 ? 6769 : 6669;
     internal static long GetRequestBodyLimit(string method, string path, long configuredUploadBytes)
     {
+        if (HttpMethods.IsPost(method) && path.Equals("/api/library/import", StringComparison.OrdinalIgnoreCase))
+            return MaximumLibraryImportBytes;
         var uploadLimit = Math.Clamp(configuredUploadBytes, 1024 * 1024, MaximumUploadBytes);
         if (HttpMethods.IsPost(method))
         {
@@ -347,6 +408,11 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
                 uploadLimit = ImageUploadBytes;
         }
         return uploadLimit + MultipartOverheadBytes;
+    }
+    private static bool IsLoopbackRequest(HttpContext context)
+    {
+        var remote = AppCoordinator.NormalizeNetworkAddress(context.Connection.RemoteIpAddress);
+        return remote is not null && IPAddress.IsLoopback(remote);
     }
     public static bool ShouldRestartForPortChange(int? requestedPort, int previousPreference, int activePort)
         => requestedPort is int port && (port != previousPreference || port != activePort);
