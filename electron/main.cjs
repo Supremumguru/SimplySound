@@ -189,6 +189,7 @@ async function createWindow(port) {
     try { if (new URL(url).origin !== appOrigin) event.preventDefault(); }
     catch { event.preventDefault(); }
   });
+  await mainWindow.webContents.session.clearCache();
   await mainWindow.loadURL(`http://127.0.0.1:${port}/?desktop=1`);
 }
 

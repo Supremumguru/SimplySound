@@ -121,7 +121,14 @@ public sealed class WebServerService(AppCoordinator coordinator, WebSocketHub hu
             if ((context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/ws")) && !IsPairingAuthorized(ip, settings.PairingToken, context.Request.Headers["X-Pairing-Token"], context.Request.Query["token"])) { context.Response.StatusCode = 401; return; }
             await next();
         });
-        app.UseWebSockets(); app.UseDefaultFiles(); app.UseStaticFiles();
+        app.UseWebSockets(); app.UseDefaultFiles(); app.UseStaticFiles(new StaticFileOptions
+        {
+            OnPrepareResponse = ctx =>
+            {
+                if (ctx.File.Name.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+                    ctx.Context.Response.Headers["Cache-Control"] = "no-store";
+            }
+        });
         app.MapGet("/api/status", () =>
         {
             var settings = coordinator.Settings;
