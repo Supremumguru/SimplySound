@@ -11,7 +11,7 @@ const { isNewerVersion, isSimplySoundReleaseAssetUrl, isSimplySoundReleaseUrl, s
 const { createMarketplaceBridge } = require('./marketplace-bridge.cjs');
 const { buildFirewallCommand } = require('./firewall-command.cjs');
 const { isSoundboardWindowOpenRequest, openSoundboardInBrowser } = require('./soundboard-link.cjs');
-const { monitorBackendProcess } = require('./backend-process.cjs');
+const { installBackendRuntime, monitorBackendProcess } = require('./backend-process.cjs');
 const { getRelaunchOptions, resolvePortablePaths } = require('./portable-mode.cjs');
 
 app.setName('SimplySound');
@@ -90,13 +90,7 @@ async function preparePackagedBackend() {
     }
   } catch {}
 
-  const staged = `${runtime}.new-${process.pid}`;
-  await fs.promises.mkdir(path.dirname(runtime), { recursive: true });
-  await fs.promises.rm(staged, { recursive: true, force: true });
-  await fs.promises.cp(source, staged, { recursive: true });
-  await fs.promises.writeFile(path.join(staged, '.SimplySound-backend.json'), JSON.stringify(manifest));
-  await fs.promises.rm(runtime, { recursive: true, force: true });
-  await fs.promises.rename(staged, runtime);
+  await installBackendRuntime(source, runtime, manifest);
   void removeObsoleteRuntime();
   return installedExe;
 }

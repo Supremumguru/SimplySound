@@ -1,7 +1,33 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { monitorBackendProcess } = require('./backend-process.cjs');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { installBackendRuntime, monitorBackendProcess } = require('./backend-process.cjs');
+
+test('installs the audio service when Windows blocks renaming the staged directory', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'simplysound-runtime-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const source = path.join(root, 'bundled');
+  const runtime = path.join(root, 'installed', 'backend');
+  const manifest = { version: '1.2.0', fingerprint: 'updated' };
+  await fs.mkdir(source);
+  await fs.writeFile(path.join(source, 'VRSoundboard.exe'), 'new runtime');
+  await fs.mkdir(runtime, { recursive: true });
+  await fs.writeFile(path.join(runtime, '.SimplySound-backend.json'), '{"fingerprint":"old"}');
+  let attempts = 0;
+  await installBackendRuntime(source, runtime, manifest, {
+    rename: async () => {
+      attempts++;
+      throw Object.assign(new Error('access denied'), { code: 'EPERM' });
+    },
+    pause: async () => {},
+  });
+  assert.ok(attempts > 1);
+  assert.equal(await fs.readFile(path.join(runtime, 'VRSoundboard.exe'), 'utf8'), 'new runtime');
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(runtime, '.SimplySound-backend.json'), 'utf8')), manifest);
+});
 
 function fakeChild() {
   const child = new EventEmitter();
