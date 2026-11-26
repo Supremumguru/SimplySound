@@ -139,3 +139,20 @@ Dieses Protokoll dokumentiert chronologisch alle Analysen, Umgebungsänderungen,
 - `webui/src/style.css`:
   - `max-width: 2400px` auf `.app-shell` beibehalten, damit beim Rauszoomen im Browser alle Kacheln tatsächlich verkleinert und auf einen Blick sichtbar werden, während bei 100 % Zoom die Monitorbreite genutzt und normal gescrollt werden kann.
   - `.is-ultra-dense` für 12–16 Spalten sowie Styling für klappbare Überschriften (rotierender Chevron, `.is-collapsed`, `.has-playing`).
+
+---
+
+## 2026-11-26 (Update 6) – Upstream-PRs #30–#32 gemergt & Release `SimplySound 1.2.0`
+
+### Ergebnis auf GitHub (`js664/SimplySound`)
+Alle drei aus dem Fork `Supremumguru/SimplySound` eingereichten Pull Requests wurden von Jan (`js664`) geprüft und in `main` gemergt:
+- **PR #30:** `fix: prevent stale cached web UI bundles after updates` (Merge `b3aa022`)
+- **PR #31:** `feat(webui): add configurable grid columns, scrolling and collapsible headings` (Merge `2938d53`)
+- **PR #32:** `feat: add portable data mode, WAV cache rebuild and ZIP library backup` (Merge `bcb0a0f`)
+
+Zusätzlich veröffentlichte Jan **SimplySound 1.2.0** (`v1.2.0`, erstes stabiles Release) mit schnellerem Windows-Startup und verbesserter Staging-Lock-Recovery (`5095b3e`).
+
+### Lokale & Fork-Synchronisation
+- `main` auf `upstream/main` (`5095b3e` / `v1.2.0`) aktualisiert.
+- `development` sauber auf `v1.2.0` neu aufgesetzt (enthält den vollständigen Upstream-Stand + `docs/development/`).
+- Gemergte Feature-Branches (`fix/webui-cache-busting`, `feat/grid-columns-and-headings`, `feat/portable-mode-and-zip-backup`) lokal und auf `origin` aufgeräumt.

@@ -6,8 +6,9 @@
 ## 1. Kernfakten auf einen Blick
 
 - **Repo / Upstream:** `https://github.com/js664/SimplySound.git` (MIT-Lizenz, Entwickler: Jan / `js664`)
-- **Referenz-Commit (`main` & Tag `v1.1.9`):** `c3aaf471b2452c11c37d326703a5e820b6995fa3`
-- **Aktiver Arbeitsbranch:** `development` (`main` darf **niemals** direkt verändert werden!)
+- **Fork (`origin`):** `https://github.com/Supremumguru/SimplySound.git`
+- **Aktueller Upstream-Stand (`main` / `v1.2.0`):** `5095b3e390e12920564a10976ba90fd8f55ac262` (erste stabile Version `1.2.0`, inkl. unserer gemergten PRs `#30`, `#31`, `#32`)
+- **Aktiver Arbeitsbranch:** `development` (`main` folgt exakt `upstream/main`!)
 - **Sprache:** Nutzerkommunikation & `docs/development/` auf **Deutsch**; Code, Bezeichner und Commit-Messages orientieren sich am englischen Originalprojekt.
 - **Original-Quellcode-Status:** Unverändert (Phase 1 abgeschlossen).
 

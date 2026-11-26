@@ -1,7 +1,8 @@
 # Projektkontext – SimplySound
 
 > **Stand:** 26.11.2026  
-> **Basis-Commit (Upstream `main` / Tag `v1.1.9`):** `c3aaf471b2452c11c37d326703a5e820b6995fa3`
+> **Ursprünglicher Analyse-Stand (`v1.1.9`):** `c3aaf471b2452c11c37d326703a5e820b6995fa3`  
+> **Aktueller Upstream-Stand (`main` / `v1.2.0`):** `5095b3e390e12920564a10976ba90fd8f55ac262`
 
 ## 1. Projektübersicht und verifizierte Metadaten
 
