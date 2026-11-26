@@ -230,6 +230,49 @@ public sealed class SoundLibraryTests
         }
     }
 
+    [Fact]
+    public void SectionHeadingsCanBeAddedRenamedReorderedAndDeletedAlongsideSounds()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var storage = new Storage(root);
+            storage.Initialize();
+            var sounds = new[] { CreateSound(0), CreateSound(1) };
+            foreach (var sound in sounds) storage.Save(sound);
+            var library = new SoundLibrary(storage);
+
+            var heading = library.AddHeading("  Star Wars  ");
+            Assert.True(heading.IsHeading);
+            Assert.Equal("heading", heading.Kind);
+            Assert.Equal("Star Wars", heading.Name);
+            Assert.Equal(2, heading.SortOrder);
+
+            library.Reorder([heading.Id, sounds[0].Id, sounds[1].Id]);
+            Assert.Equal([heading.Id, sounds[0].Id, sounds[1].Id], library.All.Select(item => item.Id));
+
+            var renamed = library.Update(heading.Id, item => item.Name = "Werner");
+            Assert.Equal("Werner", renamed.Name);
+            Assert.True(renamed.IsHeading);
+
+            Assert.Throws<ArgumentException>(() => library.Update(heading.Id, item => item.Hotkey = "Control+Alt+W"));
+            Assert.Empty(library.HotkeyAssignments);
+
+            var reloaded = new SoundLibrary(storage);
+            Assert.Equal([heading.Id, sounds[0].Id, sounds[1].Id], reloaded.All.Select(item => item.Id));
+            Assert.True(reloaded.Get(heading.Id)!.IsHeading);
+
+            reloaded.Delete(heading.Id);
+            Assert.Equal([sounds[0].Id, sounds[1].Id], reloaded.All.Select(item => item.Id));
+            Assert.Equal([0, 1], reloaded.All.Select(item => item.SortOrder));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static string CreateRoot() => Path.Combine(Path.GetTempPath(), "SimplySound-library-test-" + Guid.NewGuid().ToString("N"));
 
     private static Sound CreateSound(int order) => new()

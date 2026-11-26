@@ -181,13 +181,14 @@ public sealed class AppCoordinator(Storage storage, SoundLibrary library, AudioE
     public void Play(Guid id)
     {
         var sound = library.Get(id) ?? throw new KeyNotFoundException("Sound not found.");
+        if (sound.IsHeading) throw new InvalidOperationException("Headings cannot be played.");
         var settings = Settings;
         audio.Play(sound, settings.MasterVolume, settings.MonitorLocally, settings.MicOutputGain, settings.MonitorEndpointId, settings.UseVirtualMicHeadroom);
     }
     public Sound UpdateSound(Guid id, Action<Sound> change)
     {
         var sound = library.Update(id, change);
-        audio.SetSoundOutputGain(id, sound.OutputGain);
+        if (!sound.IsHeading) audio.SetSoundOutputGain(id, sound.OutputGain);
         return sound;
     }
     public void Stop() => audio.Stop();

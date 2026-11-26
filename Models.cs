@@ -5,6 +5,7 @@ namespace VRSoundboard;
 public sealed class Sound
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+    public string Kind { get; set; } = "sound";
     public string Name { get; set; } = "New sound";
     public string SourceFilename { get; set; } = "";
     public string? SourceProvider { get; set; }
@@ -23,6 +24,7 @@ public sealed class Sound
     public string? Icon { get; set; }
     public string? ButtonLabel { get; set; }
     public string? ImageFilename { get; set; }
+    [JsonIgnore] public bool IsHeading => string.Equals(Kind, "heading", StringComparison.OrdinalIgnoreCase);
     [JsonIgnore] public double PlayDuration => Math.Max(0, (EndSeconds ?? SourceDurationSeconds) - StartSeconds);
     [JsonIgnore] public string PlaybackStatus { get; set; } = "";
 
