@@ -28,6 +28,7 @@
       "preload.cjs",
       "marketplace-bridge.cjs",
       "firewall-command.cjs",
+      "portable-mode.cjs",
       "soundboard-link.cjs",
       "version-utils.cjs",
       "package.json"

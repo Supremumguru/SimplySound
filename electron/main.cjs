@@ -2,24 +2,37 @@ const { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, shell } = req
 const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const net = require('node:net');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { isNewerVersion, isSimplySoundReleaseAssetUrl, isSimplySoundReleaseUrl, selectNewestRelease } = require('./version-utils.cjs');
 const { createMarketplaceBridge } = require('./marketplace-bridge.cjs');
 const { buildFirewallCommand } = require('./firewall-command.cjs');
 const { isSoundboardWindowOpenRequest, openSoundboardInBrowser } = require('./soundboard-link.cjs');
 const { monitorBackendProcess } = require('./backend-process.cjs');
+const { getRelaunchOptions, resolvePortablePaths } = require('./portable-mode.cjs');
 
 app.setName('SimplySound');
 app.setAppUserModelId('com.simplysound.desktop');
 
+const portableConfig = resolvePortablePaths({
+  isPackaged: app.isPackaged,
+  portableExecutableDir: process.env.PORTABLE_EXECUTABLE_DIR,
+  execPath: process.execPath,
+  devRoot: path.resolve(__dirname, '..'),
+  appDataDir: app.getPath('appData'),
+});
+
 // Electron's application name determines its roaming settings directory. Copy the old
 // profile once so port, privacy, and desktop preferences survive the product rename.
-const newUserData = path.join(app.getPath('appData'), 'SimplySound');
+const newUserData = portableConfig.userDataDir;
 const previousUserData = path.join(app.getPath('appData'), 'Soundboardify');
-if (!fs.existsSync(newUserData) && fs.existsSync(previousUserData)) {
+if (!portableConfig.portableActive && !fs.existsSync(newUserData) && fs.existsSync(previousUserData)) {
   fs.cpSync(previousUserData, newUserData, { recursive: true, errorOnExist: true });
 }
+fs.mkdirSync(newUserData, { recursive: true });
 app.setPath('userData', newUserData);
 const setupStatePath = path.join(newUserData, 'setup-state.json');
 
@@ -111,7 +124,15 @@ async function startBackend() {
   await fs.promises.mkdir(path.dirname(portFile), { recursive: true });
   await fs.promises.rm(portFile, { force: true });
   marketplaceBridge = await createMarketplaceBridge();
-  backend = spawn(executable, ['--electron-backend', `--electron-port-file=${portFile}`, `--electron-marketplace-bridge-port=${marketplaceBridge.port}`, `--electron-marketplace-bridge-token=${marketplaceBridge.token}`], { windowsHide: true, stdio: 'ignore' });
+  const backendArgs = [
+    '--electron-backend',
+    `--electron-port-file=${portFile}`,
+    `--electron-marketplace-bridge-port=${marketplaceBridge.port}`,
+    `--electron-marketplace-bridge-token=${marketplaceBridge.token}`,
+    `--portable-target-dir=${portableConfig.portableDataDir}`,
+  ];
+  if (portableConfig.portableActive) backendArgs.push(`--data-dir=${portableConfig.portableDataDir}`);
+  backend = spawn(executable, backendArgs, { windowsHide: true, stdio: 'ignore' });
   getBackendFailure = monitorBackendProcess(backend);
   return waitForServer();
 }
@@ -280,6 +301,143 @@ ipcMain.handle('SimplySound:open-release', async (event, url) => {
   if (!isSimplySoundReleaseUrl(url)) throw new Error('That is not a SimplySound GitHub release link.');
   await shell.openExternal(url);
   return true;
+});
+
+ipcMain.handle('SimplySound:open-data-folder', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || !appOrigin) throw new Error('Data folder access is only available in SimplySound.');
+  const response = await fetch(`${appOrigin}/api/storage/info`, { signal: AbortSignal.timeout(4000) });
+  if (!response.ok) throw new Error('Could not determine the active library folder.');
+  const info = await response.json();
+  if (!info?.dataRoot) throw new Error('Library folder is unavailable.');
+  const error = await shell.openPath(info.dataRoot);
+  if (error) throw new Error(error);
+  return info.dataRoot;
+});
+
+ipcMain.handle('SimplySound:enable-portable-mode', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || !appOrigin) throw new Error('Portable mode can only be enabled from the SimplySound desktop window.');
+  if (portableConfig.portableActive) return { portablePath: portableConfig.portableDataDir, alreadyActive: true };
+  const confirm = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Switch to Portable Mode', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Switch to Portable Mode',
+    message: 'Copy your soundboard library next to SimplySound?',
+    detail: `All sounds, cover images, headings and settings will be copied to:\n${portableConfig.portableDataDir}\n\nSimplySound will restart automatically in Portable Mode.`,
+  });
+  if (confirm.response !== 0) return { canceled: true };
+
+  const response = await fetch(`${appOrigin}/api/storage/enable-portable`, { method: 'POST', signal: AbortSignal.timeout(120000) });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Could not prepare portable folder (${response.status}).`);
+  }
+  const result = await response.json();
+  const portableElectronDir = path.join(portableConfig.portableDataDir, 'electron-data');
+  await fs.promises.mkdir(portableElectronDir, { recursive: true });
+  if (fs.existsSync(setupStatePath)) {
+    await fs.promises.copyFile(setupStatePath, path.join(portableElectronDir, 'setup-state.json')).catch(() => {});
+  } else {
+    await fs.promises.writeFile(path.join(portableElectronDir, 'setup-state.json'), JSON.stringify({ completed: true, completedAt: new Date().toISOString() }));
+  }
+
+  if (backend && !backend.killed) {
+    const exited = new Promise(resolve => backend.once('exit', resolve));
+    backend.kill();
+    await Promise.race([exited, delay(2000)]);
+  }
+  const relaunch = getRelaunchOptions({
+    portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+    execPath: process.execPath,
+    argv: process.argv,
+  });
+  app.relaunch(relaunch);
+  app.exit(0);
+  return { portablePath: result?.portablePath || portableConfig.portableDataDir, restarting: true };
+});
+
+ipcMain.handle('SimplySound:export-library', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || !appOrigin) throw new Error('Library export is only available from the SimplySound desktop window.');
+  const stamp = new Date().toISOString().slice(0, 10);
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: 'Export SimplySound library',
+    defaultPath: path.join(portableConfig.baseDir, `SimplySound-Library-${stamp}.zip`),
+    filters: [{ name: 'SimplySound Backup (*.zip)', extensions: ['zip'] }],
+  });
+  if (picked.canceled || !picked.filePath) return { canceled: true };
+
+  const response = await fetch(`${appOrigin}/api/library/export`, { signal: AbortSignal.timeout(300000) });
+  if (!response.ok || !response.body) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(detail || `Export failed (${response.status}).`);
+  }
+  const tempPath = `${picked.filePath}.tmp-${process.pid}`;
+  try {
+    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(tempPath));
+    await fs.promises.rename(tempPath, picked.filePath);
+    const stat = await fs.promises.stat(picked.filePath);
+    return { canceled: false, filePath: picked.filePath, bytes: stat.size };
+  } catch (error) {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+});
+
+ipcMain.handle('SimplySound:import-library', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || !activePort) throw new Error('Library import is only available from the SimplySound desktop window.');
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title: 'Import SimplySound library',
+    defaultPath: portableConfig.baseDir,
+    properties: ['openFile'],
+    filters: [{ name: 'SimplySound Backup (*.zip)', extensions: ['zip'] }],
+  });
+  if (picked.canceled || !picked.filePaths?.length) return { canceled: true };
+  const filePath = picked.filePaths[0];
+  const confirm = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Import backup', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Import SimplySound library',
+    message: 'Replace your current soundboard library with this backup?',
+    detail: `File: ${path.basename(filePath)}\n\nAll current sounds, cover images, headings and button ordering will be replaced. Your audio device selection on this PC stays intact.`,
+  });
+  if (confirm.response !== 0) return { canceled: true };
+
+  const stat = await fs.promises.stat(filePath);
+  const result = await new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: activePort,
+      path: '/api/library/import',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Length': stat.size,
+      },
+      timeout: 300000,
+    }, res => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(body)); } catch { resolve({}); }
+          return;
+        }
+        let detail = body;
+        try { const parsed = JSON.parse(body); detail = parsed.detail || parsed.title || parsed.message || body; } catch {}
+        reject(new Error(detail || `Import failed (${res.statusCode}).`));
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('Library import timed out.')));
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.on('error', error => req.destroy(error));
+    fileStream.pipe(req);
+  });
+  return { canceled: false, ...result };
 });
 
 function watchBackendPort() {

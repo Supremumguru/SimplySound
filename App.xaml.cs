@@ -10,6 +10,8 @@ public partial class App : Application
     private WebServerService? _web;
     private bool _backendOnly;
     private string? _electronPortFile;
+    private string? _dataDir;
+    private string? _portableTargetDir;
     private int _electronMarketplaceBridgePort;
     private string? _electronMarketplaceBridgeToken;
     [STAThread]
@@ -22,16 +24,20 @@ public partial class App : Application
         base.OnStartup(e);
         _backendOnly = e.Args.Any(a => string.Equals(a, "--electron-backend", StringComparison.OrdinalIgnoreCase));
         _electronPortFile = e.Args.FirstOrDefault(a => a.StartsWith("--electron-port-file=", StringComparison.OrdinalIgnoreCase))?["--electron-port-file=".Length..];
+        _dataDir = e.Args.FirstOrDefault(a => a.StartsWith("--data-dir=", StringComparison.OrdinalIgnoreCase))?["--data-dir=".Length..];
+        _portableTargetDir = e.Args.FirstOrDefault(a => a.StartsWith("--portable-target-dir=", StringComparison.OrdinalIgnoreCase))?["--portable-target-dir=".Length..];
         int.TryParse(e.Args.FirstOrDefault(a => a.StartsWith("--electron-marketplace-bridge-port=", StringComparison.OrdinalIgnoreCase))?["--electron-marketplace-bridge-port=".Length..], out _electronMarketplaceBridgePort);
         _electronMarketplaceBridgeToken = e.Args.FirstOrDefault(a => a.StartsWith("--electron-marketplace-bridge-token=", StringComparison.OrdinalIgnoreCase))?["--electron-marketplace-bridge-token=".Length..];
         if (_backendOnly) ShutdownMode = ShutdownMode.OnExplicitShutdown;
         try
         {
-            var storage = new Storage(); storage.Initialize(); AppServices.Storage = storage;
+            var storage = new Storage(explicitRootPath: _dataDir); storage.Initialize(); AppServices.Storage = storage;
             Log.Logger = new LoggerConfiguration().MinimumLevel.Information().WriteTo.File(Path.Combine(storage.LogsPath, "app-.log"), rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14).CreateLogger();
             var collection = new ServiceCollection();
-            collection.AddSingleton(storage); collection.AddSingleton<SoundLibrary>(); collection.AddSingleton<AudioExecutionContext>(); collection.AddSingleton<AudioDeviceService>(); collection.AddSingleton<AudioEngine>(); collection.AddSingleton<AppCoordinator>(); collection.AddSingleton<SteamMicDiagnostic>(); collection.AddSingleton<WebSocketHub>(); collection.AddSingleton<MarketplaceService>(); collection.AddSingleton<WebServerService>();
+            collection.AddSingleton(storage); collection.AddSingleton<SoundLibrary>(); collection.AddSingleton<AudioExecutionContext>(); collection.AddSingleton<AudioDeviceService>(); collection.AddSingleton<AudioEngine>(); collection.AddSingleton<AppCoordinator>(); collection.AddSingleton<SteamMicDiagnostic>(); collection.AddSingleton<WebSocketHub>(); collection.AddSingleton<MarketplaceService>(); collection.AddSingleton<LibraryBundleService>(); collection.AddSingleton<WebServerService>();
             _services = collection.BuildServiceProvider();
+            if (!string.IsNullOrWhiteSpace(_portableTargetDir))
+                _services.GetRequiredService<LibraryBundleService>().ConfigurePortableTargetDirectory(_portableTargetDir);
             if (_electronMarketplaceBridgePort is >= 1 and <= 65535 && !string.IsNullOrWhiteSpace(_electronMarketplaceBridgeToken))
                 _services.GetRequiredService<MarketplaceService>().ConfigureBrowserBridge(_electronMarketplaceBridgePort, _electronMarketplaceBridgeToken);
             var core = _services.GetRequiredService<AppCoordinator>().Initialize();

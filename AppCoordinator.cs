@@ -181,6 +181,7 @@ public sealed class AppCoordinator(Storage storage, SoundLibrary library, AudioE
     public void Play(Guid id)
     {
         var sound = library.Get(id) ?? throw new KeyNotFoundException("Sound not found.");
+        library.EnsureCachedWave(sound);
         var settings = Settings;
         audio.Play(sound, settings.MasterVolume, settings.MonitorLocally, settings.MicOutputGain, settings.MonitorEndpointId, settings.UseVirtualMicHeadroom);
     }
